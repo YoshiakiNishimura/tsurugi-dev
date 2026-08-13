@@ -19,6 +19,12 @@ from .config import (
     default_workspace,
     is_tsurugidb_source,
 )
+from .common.java import (
+    JavaRuntime,
+    apply_java_runtime,
+    current_java_runtime,
+    select_java_runtime,
+)
 from .common.process import capture, quote, run
 from .common.system import ParallelDecision, auto_parallel
 
@@ -215,6 +221,38 @@ def update_home_link(layout: InstallLayout, replace_home: bool) -> None:
     print(f"TSURUGI_HOME link: {home} -> {target}")
 
 
+def configure_build_java(
+    args: argparse.Namespace,
+    env: dict[str, str],
+    skip: list[str],
+) -> tuple[dict[str, str], JavaRuntime | None, JavaRuntime | None]:
+    """Select Java 17+ for the build when Harinoki is enabled.
+
+    The caller's shell environment is never mutated. If Java 17+ is not
+    available, Harinoki is skipped automatically so the core/server build can
+    still complete.
+    """
+    current = current_java_runtime(env)
+    if "harinoki" in skip:
+        return env, current, None
+
+    runtime = select_java_runtime(
+        min_major=17,
+        preferred_major=17,
+        explicit_home=getattr(args, "java_home", None),
+        env=env,
+    )
+    if runtime is None:
+        skip.append("harinoki")
+        eprint(
+            "warning: Java 17+ was not found; automatically skipping harinoki "
+            "(Tsurugi Authentication Server)"
+        )
+        return env, current, None
+
+    return apply_java_runtime(env, runtime), current, runtime
+
+
 def execute_build(args: argparse.Namespace, *, clean: bool) -> int:
     repo: Path = args.repo
     if not is_tsurugidb_source(repo):
@@ -238,6 +276,8 @@ def execute_build(args: argparse.Namespace, *, clean: bool) -> int:
         preflight_home_link(layout, args.replace_home)
         env = build_install_env(args, layout, clean=clean)
         jobs, auto_decision = resolve_parallel(args.parallel)
+        effective_skip = list(args.skip)
+        env, current_java, build_java = configure_build_java(args, env, effective_skip)
     except RuntimeError as exc:
         eprint(f"error: {exc}")
         return 2
@@ -251,8 +291,8 @@ def execute_build(args: argparse.Namespace, *, clean: bool) -> int:
     ]
     if args.verbose:
         command.append("--verbose")
-    if args.skip:
-        command.append(f"--skip={','.join(args.skip)}")
+    if effective_skip:
+        command.append(f"--skip={','.join(effective_skip)}")
     if args.replace_config:
         command.append(f"--replaceconfig={','.join(args.replace_config)}")
 
@@ -267,6 +307,20 @@ def execute_build(args: argparse.Namespace, *, clean: bool) -> int:
     else:
         print(f"parallel:      {jobs} (explicit)")
     print(f"TG_CLEAN_BUILD={env['TG_CLEAN_BUILD']}")
+    if getattr(args, "legacy_build_all_compat", False):
+        print("build_all compatibility: ON (default)")
+    if current_java is not None:
+        print(f"shell java:    {current_java.major} ({current_java.executable})")
+    if build_java is not None:
+        switched = (
+            current_java is None or current_java.executable != build_java.executable
+        )
+        suffix = " [auto-selected]" if switched else ""
+        print(f"build java:    {build_java.major} ({build_java.executable}){suffix}")
+    elif "harinoki" in effective_skip:
+        print("build java:    Java 17+ unavailable/not required; harinoki skipped")
+    if effective_skip:
+        print(f"skip:          {','.join(effective_skip)}")
     if env.get("TG_COMMON_CMAKE_BUILD_OPTIONS"):
         print(f"TG_COMMON_CMAKE_BUILD_OPTIONS={env['TG_COMMON_CMAKE_BUILD_OPTIONS']}")
     for component, _ in args.component_dir:
@@ -372,6 +426,16 @@ def doctor(args: argparse.Namespace) -> int:
     print(f"TSURUGI_CONF: {default_config(home)}")
     decision = auto_parallel()
     print(f"parallel(auto): {decision.jobs} ({decision.reason})")
+    current_java = current_java_runtime()
+    selected_java = select_java_runtime(min_major=17, preferred_major=17)
+    if current_java is None:
+        print("java(current): unavailable")
+    else:
+        print(f"java(current): {current_java.major} ({current_java.executable})")
+    if selected_java is None:
+        print("java(build): Java 17+ not found; harinoki will be skipped")
+    else:
+        print(f"java(build): {selected_java.major} ({selected_java.executable})")
     if (repo / "VERSION").is_file():
         print(f"VERSION: {(repo / 'VERSION').read_text(encoding='utf-8').strip()}")
 

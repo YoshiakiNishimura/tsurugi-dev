@@ -98,12 +98,28 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="force bundled mpdecimal installation",
     )
+    parser.set_defaults(legacy_build_all_compat=True)
+    parser.add_argument(
+        "--no-build-all-compat",
+        dest="legacy_build_all_compat",
+        action="store_false",
+        help=(
+            "disable the default build_all compatibility settings for Jogasaki "
+            "Arrow/Parquet and $TSURUGI_DEV_WORKSPACE/.opt"
+        ),
+    )
     parser.add_argument(
         "--legacy-build-all-compat",
+        dest="legacy_build_all_compat",
         action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--java-home",
+        type=Path,
         help=(
-            "temporary compatibility mode: force C++20 for Jogasaki Arrow/Parquet "
-            "objects and prefer $TSURUGI_DEV_WORKSPACE/.opt in CMAKE_PREFIX_PATH"
+            "Java 17+ home for build-time tools; default auto-selects Java 17+ "
+            "without changing the caller's shell"
         ),
     )
     parser.add_argument(

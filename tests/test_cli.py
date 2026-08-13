@@ -21,6 +21,14 @@ class CliTests(unittest.TestCase):
         args = make_parser().parse_args(["diff-build"])
         self.assertEqual(args.parallel, "auto")
 
+    def test_build_all_compatibility_is_enabled_by_default(self) -> None:
+        args = make_parser().parse_args(["build"])
+        self.assertTrue(args.legacy_build_all_compat)
+
+    def test_build_all_compatibility_can_be_disabled(self) -> None:
+        args = make_parser().parse_args(["build", "--no-build-all-compat"])
+        self.assertFalse(args.legacy_build_all_compat)
+
     def test_repo_defaults_to_workspace_tsurugidb(self) -> None:
         with patch.dict(
             os.environ,

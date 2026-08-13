@@ -47,6 +47,9 @@ export TSURUGI_CONF="${HOME}/tsurugi.ini"
 
 export PATH="${TSURUGI_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${TSURUGI_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# 任意: build 用 Java 17+ を明示したい場合だけ設定
+# export TSURUGI_DEV_JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ```
 
 `TSURUGI_DEV_WORKSPACE` は Tsurugi 関連の Git checkout を置く基準ディレクトリです。未設定時は `${HOME}/git` を使用します。通常の `tsurugidb` source tree は次になります。
@@ -93,6 +96,20 @@ export TSURUGI_CONF=/home/user/tsurugi.ini
 export PATH="${TSURUGI_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${TSURUGI_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 ```
+
+### Java の扱い
+
+シェル側の `JAVA_HOME` / `java` が Java 11 でも、そのままで構いません。`tsurugi-dev` は Harinoki を含む build では Java 17 以上が必要かを判定し、Java 17+ が別にインストールされていれば **build subprocess 内だけ** `JAVA_HOME` と `PATH` を切り替えます。呼び出し元シェルの環境は変更しません。
+
+探索順は次です。
+
+1. `--java-home`
+1. `$TSURUGI_DEV_JAVA_HOME`
+1. 現在の `PATH` 上の Java（17以上の場合）
+1. `$JAVA_HOME`（17以上の場合）
+1. `/usr/lib/jvm` 以下（Java 17を優先）
+
+Java 17+ が見つからない場合は、core/server build を止めないため `harinoki` を自動的に skip します。
 
 ### UDF 用のパス
 
@@ -161,6 +178,10 @@ tsurugi-dev full-build
 ```
 
 `full-build` は公式 installer に `TG_CLEAN_BUILD=clean` を設定して実行します。
+
+旧 `build_all.sh` で実績のある環境との互換設定は **デフォルトで有効**です。通常は `--legacy-build-all-compat` や `--skip=harinoki` を毎回指定する必要はありません。互換設定を明示的に無効化したい場合だけ `--no-build-all-compat` を使用します。
+
+Java についても自動判定されます。例えばシェルの Java が 11 で `/usr/lib/jvm/java-17-openjdk-amd64` が存在する場合、build の間だけ Java 17 を使用します。
 
 デフォルト build type:
 
@@ -568,6 +589,18 @@ Tateyama Bootstrap の jemalloc を無効化。
 
 公式 installer に bundled mpdecimal のインストールを強制。
 
+#### `--no-build-all-compat`
+
+デフォルトで有効な旧 `build_all.sh` 互換設定を無効化します。通常は指定不要です。互換設定では Jogasaki の Arrow/Parquet object に C++20 を明示し、`${TSURUGI_DEV_WORKSPACE}/.opt` が存在する場合は CMake package 探索先として優先します。
+
+#### `--java-home PATH`
+
+自動検出ではなく、build に使用する Java 17+ の `JAVA_HOME` を明示します。シェル全体の `JAVA_HOME` は変更しません。
+
+```bash
+tsurugi-dev full-build --java-home /usr/lib/jvm/java-17-openjdk-amd64
+```
+
 #### `--cmake-option=-DNAME=VALUE`
 
 `TG_COMMON_CMAKE_BUILD_OPTIONS` に追加。繰り返し指定可能。
@@ -680,22 +713,76 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 12. ライブラリとして再利用する
+## 12. Python API / 別ツールからの再利用
 
-`tsurugi-dev` は CLI だけでなく、別の開発・環境構築ツールから再利用できる共通処理を `tsurugi_dev.common` に分離しています。
+`tsurugi-dev` は CLI だけでなく、`data-relay-grpc-grdma-test-setup` のような別の環境構築ツールから直接 import して利用できる API を提供します。GRDMA 固有処理は `tsurugi-dev` には置かず、呼び出し側ツールに残します。
 
 ```text
 src/tsurugi_dev/
+├── api.py           # Tsurugi build/update の公開 Python API
 ├── common/
 │   ├── process.py   # subprocess 実行、dry-run、stdout capture
 │   ├── git.py       # clone-if-missing / pull / submodule sync / update
-│   └── system.py    # CPU・メモリ取得、parallel auto 判定
+│   ├── system.py    # CPU・メモリ取得、parallel auto 判定
+│   └── java.py      # Java version 検出・Java 17+ 選択
 ├── config.py        # Tsurugi 固有設定
 ├── upstream.py      # Tsurugi 公式 install.sh との連携
 └── cli.py           # tsurugi-dev CLI
 ```
 
-`common` 配下には Tsurugi 固有、gRPC 固有、GRDMA 固有のビルド手順を置きません。これにより、将来別の環境構築ツールを作る場合も同じ処理を import して利用できます。
+### Tsurugi build API
+
+`argparse.Namespace` を作る必要はありません。例えば GRDMA テスト環境側から Data Relay gRPC の checkout だけ差し替えて Tsurugi をフルビルドできます。
+
+```python
+from pathlib import Path
+
+from tsurugi_dev.api import BuildRequest, full_build
+
+result = full_build(
+    BuildRequest(
+        component_dirs={
+            "data-relay-grpc": Path("/path/to/data-relay-grpc"),
+        },
+    )
+)
+
+print(result.home)
+print(result.install_dir)
+```
+
+`BuildRequest` のデフォルトは CLI と同じです。つまり parallel auto、build_all互換設定ON、Java 17+自動選択がそのまま適用されます。
+
+差分ビルドは:
+
+```python
+from tsurugi_dev.api import BuildRequest, build
+
+build(BuildRequest())
+```
+
+source tree の clone/update も API 化しています。
+
+```python
+from tsurugi_dev.api import update_source
+
+repo = update_source()
+```
+
+`common` 配下には Tsurugi 固有、gRPC 固有、GRDMA 固有のビルド手順を置きません。別ツール側で必要な下回りだけ再利用できます。
+
+### Java 選択の再利用
+
+```python
+from tsurugi_dev.common import select_java_runtime
+
+runtime = select_java_runtime(min_major=17, preferred_major=17)
+if runtime is not None:
+    print(runtime.home)
+    print(runtime.major)
+```
+
+`data-relay-grpc-grdma-test-setup` 側で Java を必要とする処理が増えても、この選択ロジックを再利用できます。
 
 ### parallel auto の再利用
 
@@ -799,3 +886,6 @@ python3 -m unittest discover -s tests -v
 - repository clone-if-missing / clone skip
 - parallel auto 判定
 - `--parallel auto|N` の CLI parsing
+- build_all互換設定のデフォルトON/OFF
+- Java 17+ の自動選択
+- `tsurugi_dev.api.BuildRequest` からの build 呼び出し
