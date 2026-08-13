@@ -38,11 +38,21 @@ ______________________________________________________________________
 通常は `~/.bashrc` などに次を設定します。
 
 ```bash
-export TSURUGI_HOME="${HOME}/git/.local-relwithdebinfo"
+# Git checkout をまとめて置く基準ディレクトリ
+export TSURUGI_DEV_WORKSPACE="${HOME}/git"
+
+# Tsurugi runtime
+export TSURUGI_HOME="${TSURUGI_DEV_WORKSPACE}/.local-relwithdebinfo"
 export TSURUGI_CONF="${HOME}/tsurugi.ini"
 
 export PATH="${TSURUGI_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${TSURUGI_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+```
+
+`TSURUGI_DEV_WORKSPACE` は Tsurugi 関連の Git checkout を置く基準ディレクトリです。未設定時は `${HOME}/git` を使用します。通常の `tsurugidb` source tree は次になります。
+
+```text
+${TSURUGI_DEV_WORKSPACE}/tsurugidb
 ```
 
 反映:
@@ -54,7 +64,15 @@ source ~/.bashrc
 `tsurugi-dev` は `--home` がない場合、次の順番で Tsurugi home を決定します。
 
 1. `$TSURUGI_HOME`
-1. `~/git/tsurugi`
+1. `${TSURUGI_DEV_WORKSPACE}/tsurugi`
+
+`tsurugidb` source tree は `--repo` がない場合、次を使用します。
+
+```text
+${TSURUGI_DEV_WORKSPACE}/tsurugidb
+```
+
+`TSURUGI_DEV_WORKSPACE` 自体が未設定なら `${HOME}/git` です。
 
 そのため、通常は `--home` を毎回指定する必要はありません。
 
@@ -69,6 +87,7 @@ tsurugi-dev env
 例:
 
 ```text
+export TSURUGI_DEV_WORKSPACE=/home/user/git
 export TSURUGI_HOME=/home/user/git/.local-relwithdebinfo
 export TSURUGI_CONF=/home/user/tsurugi.ini
 export PATH="${TSURUGI_HOME}/bin:${PATH}"
@@ -89,10 +108,37 @@ ______________________________________________________________________
 
 ## 3. 初回準備
 
-Tsurugi source tree を clone 済みとして、まず source と submodule を揃えます。
+手動で `tsurugidb` を clone する必要はありません。環境設定後、まず次を実行します。
 
 ```bash
-cd ~/git/tsurugidb
+tsurugi-dev update
+```
+
+デフォルトでは次の repository を対象にします。
+
+```text
+git@github.com:project-tsurugi/tsurugidb.git
+    ↓
+${TSURUGI_DEV_WORKSPACE}/tsurugidb
+```
+
+`${TSURUGI_DEV_WORKSPACE}/tsurugidb` が存在しない場合は、自動的に次相当を実行します。
+
+```bash
+git clone git@github.com:project-tsurugi/tsurugidb.git \
+  "${TSURUGI_DEV_WORKSPACE}/tsurugidb"
+```
+
+repository がすでに存在する場合、clone はスキップします。その後、既存 repository では `git pull --ff-only` を行い、どちらの場合も submodule を現在の `tsurugidb` commit に合わせます。
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
+したがって初回も通常の更新も同じコマンドです。
+
+```bash
 tsurugi-dev update
 ```
 
@@ -242,13 +288,31 @@ ______________________________________________________________________
 
 ## 7. update
 
-親 `tsurugidb` と pinned submodule を更新します。
+`update` は source tree の初期作成と通常更新の両方を担当します。
 
 ```bash
 tsurugi-dev update
 ```
 
-内部では:
+### repository が存在しない場合
+
+`TSURUGI_DEV_WORKSPACE` が `/home/nishimura/git` なら、次へ clone します。
+
+```text
+/home/nishimura/git/tsurugidb
+```
+
+clone 元は固定で次です。
+
+```text
+git@github.com:project-tsurugi/tsurugidb.git
+```
+
+clone 後、submodule を初期化します。
+
+### repository が存在する場合
+
+clone はスキップし、内部で次を実行します。
 
 ```bash
 git pull --ff-only
@@ -256,13 +320,13 @@ git submodule sync --recursive
 git submodule update --init --recursive
 ```
 
-を実行します。
-
 親 repository を pull せず、現在の commit に対応する submodule だけ揃える場合:
 
 ```bash
 tsurugi-dev update --no-pull
 ```
+
+`--no-pull` を指定していても source tree 自体が存在しない場合は clone します。
 
 submodule update の並列数:
 
@@ -270,7 +334,7 @@ submodule update の並列数:
 tsurugi-dev update --jobs 8
 ```
 
-実行コマンドだけ確認:
+実行予定だけ確認:
 
 ```bash
 tsurugi-dev update --dry-run
@@ -386,11 +450,27 @@ ______________________________________________________________________
 
 #### `--repo PATH`
 
-`tsurugidb` source tree。デフォルトは current directory。
+`tsurugidb` source tree を明示的に上書きします。通常は指定不要です。
+
+デフォルト:
+
+```text
+${TSURUGI_DEV_WORKSPACE}/tsurugidb
+```
+
+`TSURUGI_DEV_WORKSPACE` が未設定なら:
+
+```text
+~/git/tsurugidb
+```
+
+別 checkout を意図的に使用するときだけ指定します。
 
 ```bash
-tsurugi-dev --repo ~/git/tsurugidb build
+tsurugi-dev --repo ~/work/tsurugidb build
 ```
+
+`update` で指定先が存在しない場合は、そのパスへ `git@github.com:project-tsurugi/tsurugidb.git` を clone します。
 
 `--repo` は subcommand より前に指定します。
 
@@ -410,7 +490,7 @@ runtime の Tsurugi home。
 
 1. `--home`
 1. `$TSURUGI_HOME`
-1. `~/git/tsurugi`
+1. `${TSURUGI_DEV_WORKSPACE}/tsurugi`
 
 #### `--prefix PATH`
 
@@ -608,7 +688,7 @@ ______________________________________________________________________
 src/tsurugi_dev/
 ├── common/
 │   ├── process.py   # subprocess 実行、dry-run、stdout capture
-│   ├── git.py       # pull / submodule sync / update
+│   ├── git.py       # clone-if-missing / pull / submodule sync / update
 │   └── system.py    # CPU・メモリ取得、parallel auto 判定
 ├── config.py        # Tsurugi 固有設定
 ├── upstream.py      # Tsurugi 公式 install.sh との連携
@@ -653,6 +733,22 @@ run(
 ```python
 run(["cmake", "--build", "build"], dry_run=True)
 ```
+
+### Git clone 処理の再利用
+
+repository がなければ clone し、既存ならスキップする処理も共通化しています。
+
+```python
+from pathlib import Path
+from tsurugi_dev.common.git import clone_repository_if_missing
+
+clone_repository_if_missing(
+    Path("/path/to/workspace/grpc-over-rdma"),
+    "git@github.com:example/grpc-over-rdma.git",
+)
+```
+
+この関数は Tsurugi 固有ではないため、別の環境構築ツールでもそのまま再利用できます。
 
 ### Git 更新処理の再利用
 
@@ -699,6 +795,7 @@ python3 -m unittest discover -s tests -v
 
 主に以下を確認します。
 
-- `TSURUGI_HOME` / `TSURUGI_CONF` の優先順位
+- `TSURUGI_DEV_WORKSPACE` / `TSURUGI_HOME` / `TSURUGI_CONF` の優先順位
+- repository clone-if-missing / clone skip
 - parallel auto 判定
 - `--parallel auto|N` の CLI parsing

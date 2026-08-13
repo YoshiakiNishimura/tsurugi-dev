@@ -5,9 +5,16 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import default_config, default_home
-from .common.git import update_repository
+from .common.git import clone_repository_if_missing, update_repository
 from .common.process import quote
+from .config import (
+    TSURUGIDB_REPOSITORY_URL,
+    default_config,
+    default_home,
+    default_repo,
+    default_workspace,
+    is_tsurugidb_source,
+)
 from .upstream import (
     build,
     clean,
@@ -15,11 +22,13 @@ from .upstream import (
     full_build,
     parse_component_dir,
     parse_parallel,
-    resolve_layout,
     safe_name,
-    source_root,
     verify,
 )
+
+
+def repo_path(value: str) -> Path:
+    return Path(value).expanduser().absolute()
 
 
 def add_home_argument(parser: argparse.ArgumentParser) -> None:
@@ -27,7 +36,10 @@ def add_home_argument(parser: argparse.ArgumentParser) -> None:
         "--home",
         type=Path,
         default=default_home(),
-        help="Tsurugi home/alias (default: $TSURUGI_HOME, otherwise ~/git/tsurugi)",
+        help=(
+            "Tsurugi home/alias (default: $TSURUGI_HOME, otherwise "
+            "$TSURUGI_DEV_WORKSPACE/tsurugi)"
+        ),
     )
 
 
@@ -129,9 +141,22 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def command_update(args: argparse.Namespace) -> int:
+    repo = args.repo.expanduser().absolute()
+    cloned = clone_repository_if_missing(
+        repo,
+        TSURUGIDB_REPOSITORY_URL,
+        dry_run=args.dry_run,
+    )
+
+    if not args.dry_run and not is_tsurugidb_source(repo):
+        raise RuntimeError(
+            f"cloned/existing repository is not a tsurugidb source tree: {repo}"
+        )
+
+    # A fresh clone already has the current parent branch, so avoid an immediate pull.
     update_repository(
-        args.repo,
-        pull=not args.no_pull,
+        repo,
+        pull=(not args.no_pull and not cloned),
         jobs=args.jobs,
         dry_run=args.dry_run,
     )
@@ -139,8 +164,10 @@ def command_update(args: argparse.Namespace) -> int:
 
 
 def command_env(args: argparse.Namespace) -> int:
+    workspace = default_workspace().expanduser().absolute()
     home = args.home.expanduser().absolute()
     conf = args.conf.expanduser().absolute() if args.conf else default_config(home)
+    print(f"export TSURUGI_DEV_WORKSPACE={quote(str(workspace))}")
     print(f"export TSURUGI_HOME={quote(str(home))}")
     print(f"export TSURUGI_CONF={quote(str(conf))}")
     print('export PATH="${TSURUGI_HOME}/bin:${PATH}"')
@@ -160,9 +187,12 @@ def make_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--repo",
-        type=source_root,
-        default=Path.cwd().resolve(),
-        help="tsurugidb source tree (default: current directory)",
+        type=repo_path,
+        default=default_repo(),
+        help=(
+            "tsurugidb source tree (default: "
+            "$TSURUGI_DEV_WORKSPACE/tsurugidb, otherwise ~/git/tsurugidb)"
+        ),
     )
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -188,10 +218,13 @@ def make_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=clean)
 
     p = sub.add_parser(
-        "update", help="update the parent repository and pinned submodules"
+        "update",
+        help="clone tsurugidb if missing, then update the parent repository and pinned submodules",
     )
     p.add_argument(
-        "--no-pull", action="store_true", help="do not git pull the parent repository"
+        "--no-pull",
+        action="store_true",
+        help="do not git pull an existing parent repository",
     )
     p.add_argument(
         "--jobs", type=int, metavar="N", help="git submodule update parallelism"

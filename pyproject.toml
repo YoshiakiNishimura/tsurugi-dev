@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tsurugi-dev"
-version = "0.3.0"
-description = "Tsurugi development CLI with reusable build, Git, and system helpers"
+version = "0.4.0"
+description = "Development wrapper around project-tsurugi/tsurugidb's upstream installer"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}

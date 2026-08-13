@@ -16,6 +16,7 @@ from .config import (
     REQUIRED_SOURCE_DIRS,
     VERIFY_PATHS,
     default_config,
+    is_tsurugidb_source,
 )
 from .common.process import capture, quote, run
 from .common.system import ParallelDecision, auto_parallel
@@ -27,9 +28,9 @@ def eprint(*args: object) -> None:
 
 def source_root(value: str | os.PathLike[str]) -> Path:
     root = Path(value).expanduser().resolve()
-    if not (root / "install.sh").is_file():
+    if not is_tsurugidb_source(root):
         raise argparse.ArgumentTypeError(
-            f"not a tsurugidb source tree: {root} (install.sh not found)"
+            f"not a tsurugidb source tree: {root} (install.sh/.gitmodules not found)"
         )
     return root
 
@@ -196,6 +197,11 @@ def update_home_link(layout: InstallLayout, replace_home: bool) -> None:
 
 def execute_build(args: argparse.Namespace, *, clean: bool) -> int:
     repo: Path = args.repo
+    if not is_tsurugidb_source(repo):
+        eprint(f"tsurugidb source repository not found: {repo}")
+        eprint("run 'tsurugi-dev update' first to clone/update the source tree")
+        return 2
+
     layout = resolve_layout(args)
     layout.prefix.mkdir(parents=True, exist_ok=True)
 
@@ -292,6 +298,11 @@ def remove_path(path: Path, *, dry_run: bool) -> None:
 
 def clean(args: argparse.Namespace) -> int:
     repo: Path = args.repo
+    if not is_tsurugidb_source(repo):
+        eprint(f"tsurugidb source repository not found: {repo}")
+        eprint("run 'tsurugi-dev update' first to clone/update the source tree")
+        return 2
+
     paths = component_paths(repo, args.component_dir)
 
     print("[CMake/Ninja build directories]")
@@ -354,6 +365,11 @@ def doctor(args: argparse.Namespace) -> int:
             failures += 1
 
     print("\n[source tree]")
+    if not is_tsurugidb_source(repo):
+        print(f"MISS tsurugidb repository: {repo}")
+        print("     run 'tsurugi-dev update' to clone it and initialize submodules")
+        return failures + 1
+
     overrides: dict[str, Path] = dict(args.component_dir)
     missing = validate_submodules(repo, overrides)
     if missing:

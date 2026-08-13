@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+TSURUGI_DEV_WORKSPACE_ENV = "TSURUGI_DEV_WORKSPACE"
+TSURUGIDB_REPOSITORY_URL = "git@github.com:project-tsurugi/tsurugidb.git"
+TSURUGIDB_REPOSITORY_NAME = "tsurugidb"
+
 COMPONENT_ENV = {
     "tateyama-bootstrap": "TG_TATEYAMA_BOOTSTRAP_DIR",
     "jogasaki": "TG_JOGASAKI_DIR",
@@ -60,9 +64,29 @@ def env_path(name: str) -> Path | None:
     return Path(value).expanduser()
 
 
+def default_workspace() -> Path:
+    """Resolve the checkout workspace used by tsurugi-dev.
+
+    Resolution order:
+      1. $TSURUGI_DEV_WORKSPACE
+      2. ~/git
+    """
+    return env_path(TSURUGI_DEV_WORKSPACE_ENV) or (Path.home() / "git")
+
+
+def is_tsurugidb_source(path: Path) -> bool:
+    """Return True when *path* looks like the tsurugidb source root."""
+    return (path / "install.sh").is_file() and (path / ".gitmodules").is_file()
+
+
+def default_repo() -> Path:
+    """Return the default tsurugidb checkout path."""
+    return (default_workspace() / TSURUGIDB_REPOSITORY_NAME).expanduser().absolute()
+
+
 def default_home() -> Path:
-    """Resolve runtime home: TSURUGI_HOME first, then ~/git/tsurugi."""
-    return env_path("TSURUGI_HOME") or (Path.home() / "git" / "tsurugi")
+    """Resolve runtime home: TSURUGI_HOME first, then workspace/tsurugi."""
+    return env_path("TSURUGI_HOME") or (default_workspace() / "tsurugi")
 
 
 def default_config(home: Path) -> Path:
