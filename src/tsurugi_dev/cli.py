@@ -99,6 +99,14 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
         help="force bundled mpdecimal installation",
     )
     parser.add_argument(
+        "--legacy-build-all-compat",
+        action="store_true",
+        help=(
+            "temporary compatibility mode: force C++20 for Jogasaki Arrow/Parquet "
+            "objects and prefer $TSURUGI_DEV_WORKSPACE/.opt in CMAKE_PREFIX_PATH"
+        ),
+    )
+    parser.add_argument(
         "--cmake-option",
         action="append",
         default=[],

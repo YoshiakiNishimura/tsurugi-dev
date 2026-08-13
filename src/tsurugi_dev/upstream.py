@@ -16,6 +16,7 @@ from .config import (
     REQUIRED_SOURCE_DIRS,
     VERIFY_PATHS,
     default_config,
+    default_workspace,
     is_tsurugidb_source,
 )
 from .common.process import capture, quote, run
@@ -144,6 +145,25 @@ def build_install_env(
         common_options.append("-DTRACY_ENABLE=ON")
     if args.altimeter:
         common_options.append("-DENABLE_ALTIMETER=ON")
+
+    # Temporary compatibility mode for environments that were previously built
+    # with the legacy build_all.sh scripts.  Keep the workaround entirely in
+    # the wrapper: do not modify the Jogasaki source tree.
+    if getattr(args, "legacy_build_all_compat", False):
+        # Jogasaki explicitly provides this option for the Arrow/Parquet object
+        # target.  It is harmless for other projects that do not consume it.
+        common_options.append("-DFORCE_CXX20_ARROW_OBJS=ON")
+
+        # The old build_all.sh family searched ~/git/.opt before the install
+        # prefix.  Reproduce that lookup only when .opt exists.  This option is
+        # appended after the upstream installer's own CMAKE_PREFIX_PATH, so the
+        # compatibility value wins for CMake projects in this build.
+        opt_prefix = default_workspace().expanduser().absolute() / ".opt"
+        if opt_prefix.is_dir():
+            common_options.append(
+                f"-DCMAKE_PREFIX_PATH={opt_prefix};{layout.install_dir}"
+            )
+
     if common_options:
         env["TG_COMMON_CMAKE_BUILD_OPTIONS"] = " ".join(common_options)
 
