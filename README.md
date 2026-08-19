@@ -2,7 +2,7 @@
 
 `project-tsurugi/tsurugidb` の公式 `install.sh` を利用する開発用 CLI です。
 
-Tsurugi 各コンポーネントのビルド順序や通常の CMake オプションは再実装せず、公式 installer に任せます。このツールは、開発環境で頻繁に必要になる **環境設定、フルビルド、差分ビルド、clean、update、外部 checkout 差し替え、検証**を整理します。
+Tsurugi 各コンポーネントのビルド順序や通常の CMake オプションは再実装せず、公式 installer に任せます。このツールは、開発環境で頻繁に必要になる **環境設定、フルビルド、差分ビルド、clean、update、submodule 直接開発、component 単位の CTest、submodule gitlink 更新、検証**を整理します。
 
 Python の外部 runtime dependency はありません。Python 3.10 以上を使用します。
 
@@ -250,26 +250,24 @@ TG_CLEAN_BUILD=keep
 
 を設定するため、既存 CMake/Ninja build tree を残したまま再構成・再ビルドします。
 
-例:
+通常の component 開発では `${TSURUGI_DEV_WORKSPACE}/tsurugidb` 配下の submodule をそのまま編集します。
 
 ```bash
-cd ~/git/tsurugidb
+tsurugi-dev dev start jogasaki udf-multiport
+
+cd "${TSURUGI_DEV_WORKSPACE:-$HOME/git}/tsurugidb"
 vi jogasaki/...
+
 tsurugi-dev build
+tsurugi-dev test jogasaki
 ```
 
-特定 checkout を使う場合:
+`~/git/jogasaki` のような開発用 clone は必要ありません。
+
+`--component-dir` は、別 checkout を意図的に installer へ渡したい特殊用途のために残しています。通常の `dev start` / `dev finish` フローでは使用しません。
 
 ```bash
 tsurugi-dev build \
-  --component-dir jogasaki=~/git/jogasaki
-```
-
-複数指定も可能です。
-
-```bash
-tsurugi-dev build \
-  --component-dir jogasaki=~/git/jogasaki \
   --component-dir data-relay-grpc=~/git/data-relay-grpc
 ```
 
@@ -279,11 +277,21 @@ ______________________________________________________________________
 
 ## 6. clean
 
-既知の build output を削除します。
+以前の build/install 環境を更地にします。
 
 ```bash
 tsurugi-dev clean
 ```
+
+デフォルトでは次を削除します。
+
+- 既知の CMake / Ninja build output
+- `tsubakuro` / `tanzawa` / `harinoki` の Gradle build output
+- このツールが作成した versioned install tree
+- それを指す `TSURUGI_HOME` symlink
+
+**Git source tree、submodule の commit、開発 branch は削除しません。**
+そのため、ソースの開発状態を保持したまま build/install だけを作り直せます。
 
 削除対象だけ確認:
 
@@ -297,13 +305,11 @@ tsurugi-dev clean --dry-run
 tsurugi-dev clean --skip-gradle
 ```
 
-このツールが作成した versioned install tree も削除する場合:
+install tree を残して build output だけ削除したい場合:
 
 ```bash
-tsurugi-dev clean --install
+tsurugi-dev clean --keep-install
 ```
-
-`clean --install` は `TSURUGI_HOME` に対応する install tree まで対象になるため、通常の `clean` より影響範囲が大きい操作です。
 
 ______________________________________________________________________
 
@@ -361,9 +367,300 @@ tsurugi-dev update --jobs 8
 tsurugi-dev update --dry-run
 ```
 
+`update` は `git submodule update --init --recursive` により各 component を親 `tsurugidb` が記録している commit へ戻す操作を含みます。
+そのため、`jogasaki` などで開発 branch が checkout されている場合は、開発中の HEAD を意図せず差し替えないよう **実行を拒否**します。
+
+開発が完了している場合は先に:
+
+```bash
+tsurugi-dev dev finish jogasaki
+```
+
+を実行してください。
+
 ______________________________________________________________________
 
-## 8. doctor
+## 8. component 開発のユースケースと状態遷移
+
+通常の開発では、`${TSURUGI_DEV_WORKSPACE}/tsurugidb/jogasaki` など **親 `tsurugidb` 配下の submodule をそのまま Git working tree として使用**します。
+別の `~/git/jogasaki` clone は作りません。
+
+### 8.1 コマンドの役割
+
+| 目的 | コマンド |
+| --- | --- |
+| source/submodule を親 commit に揃える | `tsurugi-dev update` |
+| build/install 環境を更地にする | `tsurugi-dev clean` |
+| build して `TSURUGI_HOME/bin`, `lib` へ配置 | `tsurugi-dev build` |
+| component 開発 branch を作る | `tsurugi-dev dev start COMPONENT BRANCH` |
+| component の開発状態を見る | `tsurugi-dev dev status [COMPONENT]` |
+| component の CTest を実行 | `tsurugi-dev test COMPONENT` |
+| component branch を push | `tsurugi-dev dev push COMPONENT` |
+| PR merge 後に local branch を削除し最新 `master` へ戻る | `tsurugi-dev dev finish COMPONENT` |
+| 親 `tsurugidb` の submodule gitlink を最新版へ更新 | `tsurugi-dev submodule update COMPONENT -m "..."` |
+
+### 8.2 submodule の状態遷移
+
+`tsurugi-dev` では、submodule の Git 状態を大きく次の4状態として扱います。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pinned
+
+    state "通常状態: detached HEAD = 親 tsurugidb の pinned SHA" as Pinned
+    state "開発中: feature branch checkout" as Development
+    state "開発終了状態: master checkout / origin/master 以下" as Finished
+    state "更新後の通常状態: 新しい gitlink を親へ commit/push" as UpdatedPinned
+
+    Pinned --> Development: dev start COMPONENT BRANCH
+    Finished --> Development: dev start COMPONENT BRANCH
+
+    Development --> Development: edit / build / test / commit
+    Development --> Development: dev push COMPONENT
+
+    Development --> Finished: GitHub PR merge + dev finish
+
+    Finished --> Pinned: update (現在の親 gitlink へ戻す)
+    Finished --> UpdatedPinned: submodule update COMPONENT -m "..."
+    Pinned --> UpdatedPinned: submodule update COMPONENT -m "..."
+
+    UpdatedPinned --> Development: dev start COMPONENT BRANCH
+    UpdatedPinned --> UpdatedPinned: tsurugi-dev update
+```
+
+重要なのは **component repository の `master`** と **親 `tsurugidb` が保持する gitlink** は別物だという点です。
+
+- `tsurugi-dev dev finish jogasaki`
+  - `jogasaki` を最新 `origin/master` へ戻す
+  - local feature branch を削除する
+  - 親 `tsurugidb` の gitlink は変更しない
+- `tsurugi-dev submodule update jogasaki -m "..."`
+  - `git submodule update --remote jogasaki` 相当で最新 commit を取得する
+  - 親 `tsurugidb` の `jogasaki` gitlink だけを stage
+  - 親 repository を commit
+  - デフォルトでは親 repository も push
+
+### 8.3 Jogasaki を改造して PR merge する
+
+一連の流れは次です。
+
+```mermaid
+flowchart TD
+    A["tsurugi-dev update<br/>通常の pinned submodule"] --> B["tsurugi-dev dev start jogasaki udf-multiport"]
+    B --> C["jogasaki を編集"]
+    C --> D["tsurugi-dev build<br/>bin/lib を TSURUGI_HOME へ配置"]
+    D --> E["tsurugi-dev test jogasaki"]
+    E --> F["git add / git commit<br/>jogasaki repository"]
+    F --> G["tsurugi-dev dev push jogasaki"]
+    G --> H["GitHub で PR merge"]
+    H --> I["tsurugi-dev dev finish jogasaki"]
+    I --> J["最新 master で tsurugi-dev build"]
+    J --> K["tsurugi-dev test jogasaki"]
+```
+
+コマンドだけ並べると:
+
+```bash
+# 開発開始
+tsurugi-dev dev start jogasaki udf-multiport
+
+# 編集
+cd "${TSURUGI_DEV_WORKSPACE:-$HOME/git}/tsurugidb/jogasaki"
+vi ...
+
+# Tsurugi 全体を差分 build/install
+cd ..
+tsurugi-dev build
+
+# Jogasaki の CTest
+tsurugi-dev test jogasaki
+
+# Jogasaki repository に commit
+cd jogasaki
+git add ...
+git commit -m "..."
+
+# feature branch push
+cd ..
+tsurugi-dev dev push jogasaki
+```
+
+GitHub で PR を merge した後:
+
+```bash
+# origin/master を取得
+# master に戻す
+# local feature branch を削除
+tsurugi-dev dev finish jogasaki
+
+# merge 後の master で再検証
+tsurugi-dev build
+tsurugi-dev test jogasaki
+```
+
+`dev finish` は通常 merge なら feature branch が `origin/master` に含まれることを確認してから `git branch -d` します。
+
+GitHub で **Squash and merge** または **Rebase and merge** した場合は、元の feature branch commit が `origin/master` の祖先にならない場合があります。
+PR が確実に merge 済みで、local branch を捨ててよいことを確認した場合だけ:
+
+```bash
+tsurugi-dev dev finish jogasaki --force-delete
+```
+
+を使用します。
+
+### 8.4 build/install を完全に作り直して検証する
+
+Git の開発 branch を保持したまま build/install だけ更地にできます。
+
+```bash
+tsurugi-dev clean
+tsurugi-dev build
+tsurugi-dev test jogasaki
+```
+
+例えば `udf-multiport` branch 上でも `clean` 自体は branch を削除しません。
+
+```mermaid
+flowchart LR
+    A["jogasaki: udf-multiport"] --> B["tsurugi-dev clean"]
+    B --> C["Git branch はそのまま"]
+    C --> D["tsurugi-dev build"]
+    D --> E["TSURUGI_HOME/bin<br/>TSURUGI_HOME/lib"]
+```
+
+### 8.5 親 tsurugidb の submodule commit を更新する
+
+component の PR merge と `dev finish` が終わった後、親 `tsurugidb` が指す commit も更新したい場合:
+
+```bash
+tsurugi-dev submodule update jogasaki \
+  -m "Update jogasaki"
+```
+
+これは概ね次を実行します。
+
+```bash
+git submodule update --remote jogasaki
+git add -- jogasaki
+git commit -m "Update jogasaki"
+git push
+```
+
+`git add .` ではなく **`git add -- jogasaki`** を使い、対象 gitlink だけを stage します。
+親 `tsurugidb` に別の変更が存在する場合は、無関係な変更を巻き込まないよう自動 commit を拒否します。
+
+親 commit だけ作成して push は自分で行いたい場合:
+
+```bash
+tsurugi-dev submodule update jogasaki \
+  -m "Update jogasaki" \
+  --no-push
+```
+
+#### 開発中なら submodule update を拒否する
+
+例えば:
+
+```text
+jogasaki:
+  branch: udf-multiport
+  state:  development
+```
+
+の状態では:
+
+```bash
+tsurugi-dev submodule update jogasaki -m "Update jogasaki"
+```
+
+を拒否します。
+
+先に GitHub merge を完了し:
+
+```bash
+tsurugi-dev dev finish jogasaki
+```
+
+で **開発終了状態**へ戻してから再実行します。
+
+確認には:
+
+```bash
+tsurugi-dev dev status jogasaki
+```
+
+を使います。
+
+正常な例:
+
+```text
+jogasaki:
+  branch: master
+  HEAD:   0123456789ab
+  pinned: fedcba987654
+  state:  finished (clean master, synchronized with origin/master)
+```
+
+または通常の pinned submodule:
+
+```text
+jogasaki:
+  branch: (detached)
+  HEAD:   fedcba987654
+  pinned: fedcba987654
+  state:  finished (pinned detached HEAD fedcba987654)
+```
+
+### 8.6 `update` と開発 branch の衝突
+
+次の操作は危険です。
+
+```text
+jogasaki feature branch で開発中
+        |
+        +--> git submodule update --init --recursive
+                 |
+                 +--> 親 tsurugidb の pinned SHA へ checkout
+```
+
+そのため:
+
+```bash
+tsurugi-dev update
+```
+
+は開発中 component を検出した場合に停止します。
+
+```mermaid
+flowchart TD
+    A["tsurugi-dev update"] --> B{"開発中 component がある?"}
+    B -- Yes --> C["ERROR<br/>dev finish を要求"]
+    B -- No --> D["git pull --ff-only"]
+    D --> E["git submodule sync --recursive"]
+    E --> F["git submodule update --init --recursive"]
+```
+
+基本ルールは:
+
+```text
+開発開始
+  dev start
+      ↓
+開発・テスト・push
+      ↓
+GitHub merge
+      ↓
+  dev finish
+      ↓
+必要なら submodule update
+      ↓
+通常の update が安全に使える
+```
+
+______________________________________________________________________
+
+## 9. doctor
 
 ビルド前の簡易診断です。
 
@@ -389,7 +686,7 @@ tsurugi-dev doctor \
 
 ______________________________________________________________________
 
-## 9. verify
+## 10. verify
 
 インストール結果を確認します。
 
@@ -416,7 +713,7 @@ TSURUGI_CONF
 
 ______________________________________________________________________
 
-## 10. TSURUGI_HOME と install directory
+## 11. TSURUGI_HOME と install directory
 
 公式 `install.sh` は `--prefix` の下に:
 
@@ -465,7 +762,7 @@ tsurugi-dev full-build --replace-home
 
 ______________________________________________________________________
 
-## 11. 引数一覧
+## 12. 引数一覧
 
 ### グローバル
 
@@ -655,9 +952,10 @@ ______________________________________________________________________
 
 Gradle clean を行わない。
 
-#### `--install`
+#### `--keep-install`
 
-versioned install tree と対応 symlink も削除。
+versioned install tree と対応する `TSURUGI_HOME` symlink を残す。
+指定しない場合、`clean` は build output と install tree の両方を削除します。
 
 #### `--dry-run`
 
@@ -674,6 +972,146 @@ ______________________________________________________________________
 #### `--jobs N`
 
 `git submodule update` の並列数。
+
+#### `--dry-run`
+
+Git command を表示するだけで実行しない。
+
+開発 branch が checkout されている submodule がある場合、通常の `update` は component HEAD の差し替えを防ぐため停止します。
+
+______________________________________________________________________
+
+### `test` / `ctest`
+
+component の CTest を実行します。
+
+```bash
+tsurugi-dev test jogasaki
+tsurugi-dev ctest jogasaki
+```
+
+#### `COMPONENT`
+
+テスト対象の `tsurugidb` submodule 名。
+
+#### `--build-dir PATH`
+
+CTest build directory を上書きします。
+相対パスは component directory 基準です。
+
+```bash
+tsurugi-dev test jogasaki --build-dir build-debug
+```
+
+#### `--parallel auto|N`
+
+CTest の並列数。デフォルトは `auto`。
+
+#### `--regex REGEX`
+
+`ctest -R REGEX` としてテスト名を絞り込みます。
+
+```bash
+tsurugi-dev test jogasaki --regex blob
+```
+
+#### `--dry-run`
+
+CTest command を表示するだけで実行しない。
+
+______________________________________________________________________
+
+### `dev`
+
+`tsurugidb` 配下の submodule を直接開発するための command group です。
+
+#### `dev status [COMPONENT]`
+
+component の branch / HEAD / 親が pin している SHA / development state を表示します。
+COMPONENT を省略すると利用可能な component をまとめて表示します。
+
+```bash
+tsurugi-dev dev status
+tsurugi-dev dev status jogasaki
+```
+
+#### `dev start COMPONENT BRANCH`
+
+最新 `origin/master` を基点に local development branch を作成します。
+
+```bash
+tsurugi-dev dev start jogasaki udf-multiport
+```
+
+component が dirty、別の development branch 上、または安全でない detached HEAD の場合は停止します。
+
+#### `dev push COMPONENT`
+
+現在 checkout されている development branch を `origin` へ push し upstream を設定します。
+
+```bash
+tsurugi-dev dev push jogasaki
+```
+
+`master` や detached HEAD からの development push は拒否します。
+
+#### `dev finish COMPONENT`
+
+GitHub merge 後に component を最新 `origin/master` へ戻し、local development branch を削除します。
+
+```bash
+tsurugi-dev dev finish jogasaki
+```
+
+通常は development branch が `origin/master` の祖先であることを確認してから削除します。
+
+#### `--force-delete`
+
+Squash/Rebase merge などにより ancestry で merge を確認できない場合に、local branch を `git branch -D` で削除します。
+PR が merge 済みで local branch を捨ててよいことを別途確認した場合だけ使用してください。
+
+```bash
+tsurugi-dev dev finish jogasaki --force-delete
+```
+
+#### `--base BRANCH`
+
+component の base branch。デフォルトは `master`。
+
+#### `--remote NAME`
+
+component remote。デフォルトは `origin`。
+
+______________________________________________________________________
+
+### `submodule update`
+
+component の開発終了を確認した上で、親 `tsurugidb` の gitlink を remote の最新 commit へ更新します。
+
+```bash
+tsurugi-dev submodule update jogasaki -m "Update jogasaki"
+```
+
+#### `COMPONENT`
+
+更新対象 submodule。
+
+#### `-m MESSAGE` / `--message MESSAGE`
+
+親 `tsurugidb` に作成する commit message。必須です。
+commit message の書式は対象 repository の開発ルールに従ってください。
+
+#### `--no-push`
+
+親 repository に commit は作成するが `git push` は行いません。
+
+#### `--base BRANCH`
+
+component の base branch。デフォルトは `master`。
+
+#### `--remote NAME`
+
+component remote。デフォルトは `origin`。
 
 #### `--dry-run`
 
@@ -713,7 +1151,7 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 12. Python API / 別ツールからの再利用
+## 13. Python API / 別ツールからの再利用
 
 `tsurugi-dev` は CLI だけでなく、`data-relay-grpc-grdma-test-setup` のような別の環境構築ツールから直接 import して利用できる API を提供します。GRDMA 固有処理は `tsurugi-dev` には置かず、呼び出し側ツールに残します。
 
@@ -725,9 +1163,10 @@ src/tsurugi_dev/
 │   ├── git.py       # clone-if-missing / pull / submodule sync / update
 │   ├── system.py    # CPU・メモリ取得、parallel auto 判定
 │   └── java.py      # Java version 検出・Java 17+ 選択
-├── config.py        # Tsurugi 固有設定
-├── upstream.py      # Tsurugi 公式 install.sh との連携
-└── cli.py           # tsurugi-dev CLI
+├── config.py          # Tsurugi 固有設定
+├── upstream.py        # Tsurugi 公式 install.sh との連携
+├── module_workflow.py # submodule 開発 / CTest / gitlink 更新
+└── cli.py             # tsurugi-dev CLI
 ```
 
 ### Tsurugi build API
@@ -872,7 +1311,7 @@ from tsurugi_dev.common.git import (
 
 ______________________________________________________________________
 
-## 13. テスト
+## 14. テスト
 
 外部 test framework は不要です。
 
@@ -889,3 +1328,7 @@ python3 -m unittest discover -s tests -v
 - build_all互換設定のデフォルトON/OFF
 - Java 17+ の自動選択
 - `tsurugi_dev.api.BuildRequest` からの build 呼び出し
+- submodule development state 判定
+- `dev start` / `dev finish` の branch 遷移
+- development branch 中の `submodule update` 拒否
+- 親 `tsurugidb` の gitlink update / commit guard

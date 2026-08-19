@@ -3,10 +3,19 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-
 from . import __version__
 from .common.git import clone_repository_if_missing, update_repository
 from .common.process import quote
+from .module_workflow import (
+    assert_no_active_development,
+    component_name,
+    dev_finish,
+    dev_push,
+    dev_start,
+    dev_status,
+    submodule_update,
+    test_component,
+)
 from .config import (
     TSURUGIDB_REPOSITORY_URL,
     default_config,
@@ -176,6 +185,9 @@ def command_update(args: argparse.Namespace) -> int:
         raise RuntimeError(
             f"cloned/existing repository is not a tsurugidb source tree: {repo}"
         )
+    # Protect component development branches from a recursive submodule checkout.
+    if not cloned and not args.dry_run:
+        assert_no_active_development(repo)
 
     # A fresh clone already has the current parent branch, so avoid an immediate pull.
     update_repository(
@@ -218,7 +230,6 @@ def make_parser() -> argparse.ArgumentParser:
             "$TSURUGI_DEV_WORKSPACE/tsurugidb, otherwise ~/git/tsurugidb)"
         ),
     )
-
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("full-build", help="clean build and install the full tree")
@@ -230,17 +241,25 @@ def make_parser() -> argparse.ArgumentParser:
     )
     add_build_arguments(p)
     p.set_defaults(func=build)
-
-    p = sub.add_parser("clean", help="remove known build outputs")
+    p = sub.add_parser(
+        "clean",
+        help="remove known build outputs and the development install tree",
+    )
     add_layout_arguments(p)
     add_component_argument(p)
     p.add_argument("--skip-gradle", action="store_true", help="do not run Gradle clean")
+    p.set_defaults(install=True)
     p.add_argument(
-        "--install", action="store_true", help="also remove this wrapper's install tree"
+        "--keep-install",
+        dest="install",
+        action="store_false",
+        help="keep the installed TSURUGI_HOME/versioned install tree",
+    )
+    p.add_argument(
+        "--install", dest="install", action="store_true", help=argparse.SUPPRESS
     )
     p.add_argument("--dry-run", action="store_true", help="show removal targets only")
     p.set_defaults(func=clean)
-
     p = sub.add_parser(
         "update",
         help="clone tsurugidb if missing, then update the parent repository and pinned submodules",
@@ -255,6 +274,95 @@ def make_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--dry-run", action="store_true", help="print Git commands only")
     p.set_defaults(func=command_update)
+    p = sub.add_parser(
+        "test", aliases=["ctest"], help="run CTest for one tsurugidb submodule"
+    )
+    p.add_argument("component", type=component_name, help="component/submodule name")
+    p.add_argument(
+        "--build-dir",
+        type=Path,
+        help="CTest build directory; relative paths are resolved under the component",
+    )
+    p.add_argument(
+        "--parallel",
+        type=parse_parallel,
+        default="auto",
+        metavar="auto|N",
+        help="CTest parallel jobs (default: auto)",
+    )
+    p.add_argument("--regex", help="pass -R REGEX to ctest")
+    p.add_argument("--dry-run", action="store_true", help="print CTest command only")
+    p.set_defaults(func=test_component)
+
+    p = sub.add_parser(
+        "dev", help="develop a component directly in the tsurugidb submodule"
+    )
+    dev_sub = p.add_subparsers(dest="dev_command", required=True)
+
+    dp = dev_sub.add_parser("status", help="show component development state")
+    dp.add_argument("component", nargs="?", type=component_name)
+    dp.add_argument("--base", default="master", help="base branch (default: master)")
+    dp.add_argument("--remote", default="origin", help="remote name (default: origin)")
+    dp.set_defaults(func=dev_status)
+
+    dp = dev_sub.add_parser("start", help="start a component development branch")
+    dp.add_argument("component", type=component_name)
+    dp.add_argument("branch", help="new development branch name")
+    dp.add_argument("--base", default="master", help="base branch (default: master)")
+    dp.add_argument("--remote", default="origin", help="remote name (default: origin)")
+    dp.add_argument("--dry-run", action="store_true", help="print Git commands only")
+    dp.set_defaults(func=dev_start)
+
+    dp = dev_sub.add_parser(
+        "push", help="push the current component development branch"
+    )
+    dp.add_argument("component", type=component_name)
+    dp.add_argument("--base", default="master", help="base branch (default: master)")
+    dp.add_argument("--remote", default="origin", help="remote name (default: origin)")
+    dp.add_argument("--dry-run", action="store_true", help="print Git commands only")
+    dp.set_defaults(func=dev_push)
+
+    dp = dev_sub.add_parser(
+        "finish",
+        help="return a component to updated master and delete its local development branch",
+    )
+    dp.add_argument("component", type=component_name)
+    dp.add_argument("--base", default="master", help="base branch (default: master)")
+    dp.add_argument("--remote", default="origin", help="remote name (default: origin)")
+    dp.add_argument(
+        "--force-delete",
+        action="store_true",
+        help="delete a non-ancestor branch after separately verifying squash/rebase PR merge",
+    )
+    dp.add_argument("--dry-run", action="store_true", help="print Git commands only")
+    dp.set_defaults(func=dev_finish)
+
+    p = sub.add_parser(
+        "submodule",
+        help="update a tsurugidb gitlink after component development is finished",
+    )
+    sm_sub = p.add_subparsers(dest="submodule_command", required=True)
+    sp = sm_sub.add_parser(
+        "update",
+        help="git submodule update --remote, stage the gitlink, commit and push",
+    )
+    sp.add_argument("component", type=component_name)
+    sp.add_argument(
+        "-m", "--message", required=True, help="parent repository commit message"
+    )
+    sp.add_argument(
+        "--base", default="master", help="component base branch (default: master)"
+    )
+    sp.add_argument(
+        "--remote", default="origin", help="component remote name (default: origin)"
+    )
+    sp.add_argument(
+        "--no-push",
+        action="store_true",
+        help="commit but do not push the parent repository",
+    )
+    sp.add_argument("--dry-run", action="store_true", help="print Git commands only")
+    sp.set_defaults(func=submodule_update)
 
     p = sub.add_parser("doctor", help="check tools, source tree and auto parallelism")
     add_home_argument(p)
@@ -264,7 +372,6 @@ def make_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify", help="verify installed files and shared libraries")
     add_home_argument(p)
     p.set_defaults(func=verify)
-
     p = sub.add_parser("env", help="print recommended runtime shell exports")
     add_home_argument(p)
     p.add_argument(
