@@ -28,9 +28,137 @@ from .common.java import (
 from .common.process import capture, quote, run
 from .common.system import ParallelDecision, auto_parallel
 
+UBUNTU_BUILD_PACKAGES = (
+    "build-essential",
+    "cmake",
+    "curl",
+    "doxygen",
+    "flex",
+    "bison",
+    "libabsl-dev",
+    "libboost-container-dev",
+    "libboost-filesystem-dev",
+    "libboost-regex-dev",
+    "libboost-serialization-dev",
+    "libboost-stacktrace-dev",
+    "libboost-system-dev",
+    "libboost-thread-dev",
+    "libgflags-dev",
+    "libgoogle-glog-dev",
+    "libgrpc-dev",
+    "libgrpc++-dev",
+    "libicu-dev",
+    "libjemalloc-dev",
+    "libjwt-dev",
+    "libleveldb-dev",
+    "libmsgpack-dev",
+    "libnuma-dev",
+    "libpq-dev",
+    "libprotobuf-dev",
+    "librocksdb-dev",
+    "libssl-dev",
+    "libtbb-dev",
+    "lsb-release",
+    "ninja-build",
+    "nlohmann-json3-dev",
+    "openjdk-17-jdk-headless",
+    "openssl",
+    "pkg-config",
+    "protobuf-compiler",
+    "protobuf-compiler-grpc",
+    "uuid-dev",
+)
+
+DOCTOR_TOOLS = (
+    ("git", "git"),
+    ("cmake", "cmake"),
+    ("ninja", "ninja-build"),
+    ("make", "build-essential"),
+    ("gcc", "build-essential"),
+    ("g++", "build-essential"),
+    ("tar", "tar"),
+    ("curl", "curl"),
+    ("pkg-config", "pkg-config"),
+    ("flex", "flex"),
+    ("bison", "bison"),
+    ("doxygen", "doxygen"),
+    ("dot", "graphviz"),
+    ("protoc", "protobuf-compiler"),
+    ("grpc_cpp_plugin", "protobuf-compiler-grpc"),
+    ("java", "openjdk-17-jdk-headless"),
+)
+
+DOCTOR_PKG_CONFIG_MODULES = (
+    ("absl_base", "libabsl-dev"),
+    ("icu-uc", "libicu-dev"),
+    ("openssl", "libssl-dev"),
+    ("protobuf", "libprotobuf-dev"),
+    ("grpc++", "libgrpc++-dev"),
+    ("uuid", "uuid-dev"),
+)
+
+DOCTOR_HEADER_LIBRARIES = (
+    (
+        "Boost",
+        ("boost/filesystem.hpp", "boost/thread.hpp", "boost/container/vector.hpp"),
+        ("boost_filesystem", "boost_thread", "boost_container"),
+        "libboost-all-dev",
+    ),
+    ("glog", ("glog/logging.h",), ("glog",), "libgoogle-glog-dev"),
+    ("gflags", ("gflags/gflags.h",), ("gflags",), "libgflags-dev"),
+    ("RocksDB", ("rocksdb/db.h",), ("rocksdb",), "librocksdb-dev"),
+    ("nlohmann_json", ("nlohmann/json.hpp",), (), "nlohmann-json3-dev"),
+    ("OpenSSL", ("openssl/ssl.h",), ("ssl", "crypto"), "libssl-dev"),
+    ("TBB", ("oneapi/tbb.h",), ("tbb",), "libtbb-dev"),
+    ("Protobuf", ("google/protobuf/message.h",), ("protobuf",), "libprotobuf-dev"),
+    ("gRPC", ("grpcpp/grpcpp.h",), ("grpc++", "grpc"), "libgrpc++-dev"),
+    ("Arrow", ("arrow/api.h",), ("arrow",), "libarrow-dev"),
+    ("Parquet", ("parquet/api/reader.h",), ("parquet",), "libparquet-dev"),
+    ("jemalloc", ("jemalloc/jemalloc.h",), ("jemalloc",), "libjemalloc-dev"),
+    ("JWT", ("jwt.h",), ("jwt",), "libjwt-dev"),
+    ("LevelDB", ("leveldb/db.h",), ("leveldb",), "libleveldb-dev"),
+    ("msgpack", ("msgpack.hpp",), ("msgpackc",), "libmsgpack-dev"),
+    ("numa", ("numa.h",), ("numa",), "libnuma-dev"),
+    ("PostgreSQL libpq", ("postgresql/libpq-fe.h",), ("pq",), "libpq-dev"),
+    ("UUID", ("uuid/uuid.h",), ("uuid",), "uuid-dev"),
+)
+
 
 def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
+
+
+def common_include_dirs() -> tuple[Path, ...]:
+    return tuple(Path(p) for p in ("/usr/include", "/usr/local/include"))
+
+
+def header_exists(header: str) -> bool:
+    return any((directory / header).is_file() for directory in common_include_dirs())
+
+
+def ldconfig_libraries() -> set[str]:
+    if not sys.platform.startswith("linux") or shutil.which("ldconfig") is None:
+        return set()
+    result = subprocess.run(
+        ["ldconfig", "-p"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    libraries: set[str] = set()
+    for line in result.stdout.splitlines():
+        match = re.search(r"\b(lib[^ ]+\.so(?:\.[^ ]+)*)\b", line)
+        if match:
+            libraries.add(match.group(1))
+    return libraries
+
+
+def library_exists(libraries: set[str], name: str) -> bool:
+    prefix = f"lib{name}.so"
+    return any(item == prefix or item.startswith(f"{prefix}.") for item in libraries)
 
 
 def source_root(value: str | os.PathLike[str]) -> Path:
@@ -419,6 +547,7 @@ def clean(args: argparse.Namespace) -> int:
 def doctor(args: argparse.Namespace) -> int:
     repo: Path = args.repo
     failures = 0
+    missing_apt_packages: set[str] = set()
     home = args.home.expanduser().absolute()
 
     print(f"source: {repo}")
@@ -440,13 +569,68 @@ def doctor(args: argparse.Namespace) -> int:
         print(f"VERSION: {(repo / 'VERSION').read_text(encoding='utf-8').strip()}")
 
     print("\n[tools]")
-    for tool in ("git", "cmake", "ninja", "make", "tar", "curl", "java"):
+    for tool, apt_package in DOCTOR_TOOLS:
         path = shutil.which(tool)
         if path:
             print(f"OK   {tool}: {path}")
         else:
             print(f"MISS {tool}")
+            if apt_package:
+                missing_apt_packages.add(apt_package)
             failures += 1
+
+    if sys.platform.startswith("linux"):
+        if shutil.which("pkg-config"):
+            print("\n[pkg-config libraries]")
+            for module, apt_package in DOCTOR_PKG_CONFIG_MODULES:
+                result = subprocess.run(
+                    ["pkg-config", "--exists", module],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if result.returncode == 0:
+                    print(f"OK   pkg-config:{module}")
+                else:
+                    print(f"MISS pkg-config:{module}")
+                    missing_apt_packages.add(apt_package)
+                    failures += 1
+
+        print("\n[headers/libraries]")
+        available_libraries = ldconfig_libraries()
+        for name, headers, libraries, apt_package in DOCTOR_HEADER_LIBRARIES:
+            missing_headers = [header for header in headers if not header_exists(header)]
+            missing_libraries = [
+                library
+                for library in libraries
+                if not library_exists(available_libraries, library)
+            ]
+            if not missing_headers and not missing_libraries:
+                print(f"OK   {name}")
+                continue
+            details = []
+            if missing_headers:
+                details.append("headers: " + ", ".join(missing_headers))
+            if missing_libraries:
+                details.append("libs: " + ", ".join(f"lib{x}.so" for x in missing_libraries))
+            print(f"MISS {name} ({'; '.join(details)})")
+            missing_apt_packages.add(apt_package)
+            failures += 1
+
+        print("\n[Ubuntu packages]")
+        apt_install_script = repo / "dist" / "install" / "apt-install.sh"
+        if apt_install_script.is_file():
+            print("Recommended upstream prerequisite installer:")
+            print(f"  sudo {quote(str(apt_install_script))}")
+        else:
+            print("Recommended build prerequisites:")
+            print(f"  sudo apt install -y {' '.join(UBUNTU_BUILD_PACKAGES)}")
+            print(
+                "  # After 'tsurugi-dev update', prefer: "
+                "sudo ${TSURUGI_DEV_WORKSPACE:-$HOME/git}/tsurugidb/dist/install/apt-install.sh"
+            )
+        if missing_apt_packages:
+            print("Missing tool packages:")
+            print(f"  sudo apt install -y {' '.join(sorted(missing_apt_packages))}")
 
     print("\n[source tree]")
     if not is_tsurugidb_source(repo):
