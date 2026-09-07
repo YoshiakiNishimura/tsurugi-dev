@@ -10,19 +10,41 @@ ______________________________________________________________________
 
 ## 1. tsurugi-dev 自体のインストール
 
-このリポジトリで次を実行します。
+このリポジトリで Python 仮想環境を作成し、editable install します。
+Ubuntu 26.04 などの Debian 系環境では system Python が externally managed environment として保護されているため、仮想環境でのインストールを推奨します。
 
 ```bash
-python3 -m pip install -e .
+sudo apt install -y python3-full python3-venv
+
+cd ~/git/tsurugi-dev
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install -U pip
+python -m pip install -e .
 ```
 
 editable install なので、`src/tsurugi_dev/` を変更すると再インストールせず反映されます。
+別の shell で使う場合は、先に次を実行して仮想環境を有効化します。
+
+```bash
+cd ~/git/tsurugi-dev
+source .venv/bin/activate
+```
 
 確認:
 
 ```bash
 tsurugi-dev --version
 tsurugi-dev --help
+```
+
+`tsurugi-dev` 自体を編集せず CLI として使うだけなら、`pipx` で分離してインストールすることもできます。
+
+```bash
+sudo apt install -y pipx
+pipx ensurepath
+pipx install -e .
 ```
 
 `pip` を使わず実行したい場合も、source tree で次の形式が使えます。
